@@ -12,6 +12,7 @@ import {
   PLAYER_SYNC_QUEUE,
   PLAYER_SET_MODE,
   PLAYER_REFRESH_QUEUE,
+  PLAYER_SET_LYRICS,
 } from '../actions'
 import config from '../config'
 
@@ -177,16 +178,28 @@ const reduceSyncQueue = (state, { data: { audioInfo, audioLists } }) => {
   const hasPendingSwitch =
     state.playIndex != null &&
     (state.clear || state.playIndex !== state.savedPlayIndex)
+  const previousItems = new Map(state.queue.map((item) => [item.uuid, item]))
+  const queue = audioLists.map((item) => {
+    const previous = previousItems.get(item.uuid)
+    return previous && typeof previous.lyric === 'string'
+      ? { ...item, lyric: previous.lyric }
+      : item
+  })
   return {
     ...state,
-    queue: audioLists,
+    queue,
     clear: hasPendingSwitch ? state.clear : false,
     playIndex: hasPendingSwitch ? state.playIndex : undefined,
   }
 }
 
 const reduceCurrent = (state, { data }) => {
-  const current = data.ended ? {} : data
+  const queuedItem = state.queue.find((item) => item.uuid === data.uuid)
+  const current = data.ended
+    ? {}
+    : queuedItem && typeof queuedItem.lyric === 'string'
+    ? { ...data, lyric: queuedItem.lyric }
+    : data
   const savedPlayIndex = state.queue.findIndex(
     (item) => item.uuid === current.uuid,
   )
@@ -247,6 +260,20 @@ export const playerReducer = (previousState = initialState, payload) => {
         autoPlay: false,
         playIndex:
           previousState.savedPlayIndex >= 0 ? previousState.savedPlayIndex : 0,
+      }
+    }
+    case PLAYER_SET_LYRICS: {
+      const { trackId, lyric } = payload.data || {}
+      if (!trackId) return previousState
+      return {
+        ...previousState,
+        queue: previousState.queue.map((item) =>
+          item.trackId === trackId ? { ...item, lyric } : item,
+        ),
+        current:
+          previousState.current?.trackId === trackId
+            ? { ...previousState.current, lyric }
+            : previousState.current,
       }
     }
     default:

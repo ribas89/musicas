@@ -1,98 +1,224 @@
-<a href="https://www.navidrome.org"><img src="resources/logo-192x192.png" alt="Navidrome logo" title="navidrome" align="right" height="60px" /></a>
+# Musicas
 
-# Navidrome Music Server &nbsp;[![Tweet](https://img.shields.io/twitter/url/http/shields.io.svg?style=social)](https://twitter.com/intent/tweet?text=Tired%20of%20paying%20for%20music%20subscriptions%2C%20and%20not%20finding%20what%20you%20really%20like%3F%20Roll%20your%20own%20streaming%20service%21&url=https://navidrome.org&via=navidrome)
+Musicas is a customized [Navidrome](https://github.com/navidrome/navidrome) music server with Authentik login, shared and private libraries, folder-based playlists, file management, native lyrics retrieval, and YouTube Music playlist synchronization through [MusicasYT](https://github.com/ribas89/musicasyt).
 
-[![Last Release](https://img.shields.io/github/v/release/navidrome/navidrome?logo=github&label=latest&style=flat-square)](https://github.com/navidrome/navidrome/releases)
-[![Build](https://img.shields.io/github/actions/workflow/status/navidrome/navidrome/pipeline.yml?branch=master&logo=github&style=flat-square)](https://nightly.link/navidrome/navidrome/workflows/pipeline/master)
-[![Downloads](https://img.shields.io/github/downloads/navidrome/navidrome/total?logo=github&style=flat-square)](https://github.com/navidrome/navidrome/releases/latest)
-[![Docker Pulls](https://img.shields.io/endpoint?url=https%3A%2F%2Fwww.navidrome.org%2Fbadges%2Fcontainer-downloads.json&logo=docker&label=pulls&style=flat-square)](https://hub.docker.com/r/navidrome/navidrome)
-[![Dev Chat](https://img.shields.io/discord/671335427726114836?logo=discord&label=discord&style=flat-square)](https://discord.gg/xh7j7yF)
-[![Subreddit](https://img.shields.io/reddit/subreddit-subscribers/navidrome?logo=reddit&label=/r/navidrome&style=flat-square)](https://www.reddit.com/r/navidrome/)
-[![Contributor Covenant](https://img.shields.io/badge/Contributor%20Covenant-v2.0-ff69b4.svg?style=flat-square)](CODE_OF_CONDUCT.md)
-[![Gurubase](https://img.shields.io/badge/Gurubase-Ask%20Navidrome%20Guru-006BFF?style=flat-square)](https://gurubase.io/g/navidrome)
+It retains Navidrome's web player, music scanner, Subsonic/OpenSubsonic API, and normal playback features. The additions are integrated into the Navidrome backend and web interface, except for YouTube downloads, which are handled by the optional MusicasYT worker.
 
-Navidrome is an open source web-based music collection server and streamer. It gives you freedom to listen to your
-music collection from any browser or mobile device. It's like your personal Spotify!
+## Requirements
 
+- Docker with Docker Compose
+- An Authentik OAuth2/OIDC provider for user sign-in
+- Persistent directories for application data and music
+- A reverse proxy for HTTPS access (the included Compose example uses Traefik)
+- An existing Docker network shared with the reverse proxy
+- Optional: a running [MusicasYT](https://github.com/ribas89/musicasyt) worker for YouTube Music synchronization
 
-**Note**: The `master` branch may be in an unstable or even broken state during development. 
-Please use [releases](https://github.com/navidrome/navidrome/releases) instead of 
-the `master` branch in order to get a stable set of binaries.
+The container runs as **UID:GID `1000:1000`**. Its `/data` directory must be writable; `/music` must be readable, and private libraries must be writable for uploads, lyrics, and playlist downloads.
 
-## [Check out our Live Demo!](https://www.navidrome.org/demo/)
+The Dockerfile builds the React interface and Go backend (Go **1.27**). You do not need a local Go or Node.js installation when building with Docker.
 
-__Any feedback is welcome!__ If you find a bug, please file a [GitHub issue](https://github.com/navidrome/navidrome/issues/new/choose). 
-If you need/want a new feature or think of any way to improve Navidrome, please share it in 
-[Discussions](https://github.com/navidrome/navidrome/discussions/categories/ideas) or join the discussion in our 
-[Subreddit](https://www.reddit.com/r/navidrome/). Before contributing code, please read the 
-[Contribution Guide](CONTRIBUTING.md). If you want to contribute to the project in any other way 
-([ui/backend dev](https://www.navidrome.org/docs/developers/), 
-[translations](https://www.navidrome.org/docs/developers/translations/), 
-[themes](https://www.navidrome.org/docs/developers/creating-themes)), please join the chat in our 
-[Discord server](https://discord.gg/xh7j7yF). 
+## Configuration
 
-## Installation
+The repository includes `.env.example` and `docker-compose.oidc.yml`. One possible directory layout is:
 
-See instructions on the [project's website](https://www.navidrome.org/docs/installation/)
+```text
+musicas/
+├── .env                     Private deployment settings
+├── build/                   Musicas source and Docker Compose file
+├── data/                    Persistent Navidrome data and SQLite database
+└── music/
+    ├── public/              Shared music library
+    └── users/               Private music libraries
+        └── alice/
+```
 
-## Cloud Hosting
+From the parent `musicas/` directory, create the required folders and copy the environment template:
 
-Several cloud hosting providers partner with us to offer [officially supported, cloud-hosted solutions](https://www.navidrome.org/docs/installation/managed). If you sign up with any of these providers, a share of the revenue funds the development of Navidrome at no additional cost for you.
+```bash
+mkdir -p data music/public music/users
+cp build/.env.example .env
+chmod 600 .env
+```
 
-<a href="https://www.pikapods.com/pods?run=navidrome"><img src="resources/hosting/pikapods.svg" alt="Run on PikaPods" width="200" height="40"></a>
-<br>
-<a href="https://zenith.hosting/host/navidrome?ref=navidrome"><img src="resources/hosting/zenith.svg" alt="Deploy with Zenith" width="200" height="40"></a>
-<br>
-<a href="https://store.elfhosted.com/product/navidrome/"><img src="resources/hosting/elfhosted.svg" alt="Deploy on ElfHosted" width="200" height="40"></a>
+Make the directories writable by the container user where needed; on a Linux host, for example:
 
+```bash
+sudo chown -R 1000:1000 data music/users
+```
 
+Configure an **OAuth2/OIDC confidential provider** in Authentik using the authorization-code flow, PKCE, and RS256 signing. Register your exact public callback URL:
 
+```text
+https://music.example.com/auth/oidc/callback
+```
 
+Set its issuer URL, client ID, and client secret in `.env`. The OIDC `preferred_username` claim identifies the corresponding private library. Use a stable, filesystem-safe username; changing it later requires an explicit library migration. Do not enable a separate forward-auth layer for Musicas.
 
+On first Authentik login, Musicas provisions the Navidrome user and private library and asks for a **separate Navidrome password** for Subsonic clients. The local bootstrap administrator is configured with `ADMIN_USER` and `ADMIN_PASSWORD`.
 
-## Features
- 
- - Handles very **large music collections**
- - Streams virtually **any audio format** available
- - Reads and uses all your beautifully curated **metadata**
- - Great support for **compilations** (Various Artists albums) and **box sets** (multi-disc albums)
- - **Multi-user**, each user has their own play counts, playlists, favourites, etc...
- - Very **low resource usage**
- - **Multi-platform**, runs on macOS, Linux and Windows. **Docker** images are also provided
- - Ready to use binaries for all major platforms, including **Raspberry Pi**
- - Automatically **monitors your library** for changes, importing new files and reloading new metadata 
- - Supports **lyrics** from sidecar .ttml, .yaml/.yml Lyricsfile, .elrc, .lrc, .srt, .txt files and embedded TTML, Enhanced LRC, LRC, SRT, and plain-text tags (via `lyricspriority`)
- - **Themeable**, modern and responsive **Web interface** based on [Material UI](https://material-ui.com)
- - **Compatible** with all Subsonic/Madsonic/Airsonic [clients](https://www.navidrome.org/docs/overview/#apps)
- - **Transcoding** on the fly. Can be set per user/player. **Opus encoding is supported**
- - Translated to **various languages**
+## Environment example
 
-## Translations
+```dotenv
+# Authentik OAuth2/OIDC
+OIDC_ISSUER_URL=https://auth.example.com/application/o/musicas/
+OIDC_CLIENT_ID=replace-with-client-id
+OIDC_CLIENT_SECRET=replace-with-client-secret
+OIDC_REDIRECT_URL=https://music.example.com/auth/oidc/callback
 
-Navidrome uses [POEditor](https://poeditor.com/) for translations, and we are always looking 
-for [more contributors](https://www.navidrome.org/docs/developers/translations/)
+# Initial local administrator
+ADMIN_USER=admin
+ADMIN_PASSWORD=replace-with-a-strong-password
 
-<a href="https://poeditor.com/"> 
-<img height="32" src="https://github.com/user-attachments/assets/c19b1d2b-01e1-4682-a007-12356c42147c">
-</a>
+# Navidrome and music directories
+ND_PORT=4553
+ND_MUSICFOLDER=/music/public
+MUSIC_USERS_ROOT=/music/users
+ND_AUTOIMPORTPLAYLISTS=false
 
-## Documentation
-All documentation can be found in the project's website: https://www.navidrome.org/docs. 
-Here are some useful direct links:
+# Native LRCLIB-compatible lyrics retrieval
+LYRICS_URL=https://lrclib.net
+LYRICS_INTERVAL=24h
 
-- [Overview](https://www.navidrome.org/docs/overview/)
-- [Installation](https://www.navidrome.org/docs/installation/)
-  - [Docker](https://www.navidrome.org/docs/installation/docker/)
-  - [Binaries](https://www.navidrome.org/docs/installation/pre-built-binaries/)
-  - [Build from source](https://www.navidrome.org/docs/installation/build-from-source/)
-- [Development](https://www.navidrome.org/docs/developers/)
-- [Subsonic API Compatibility](https://www.navidrome.org/docs/developers/subsonic-api/)
+# Optional YouTube Music worker
+MUSICASYT_URL=https://youtube-worker.example.com
+MUSICASYT_API_KEY=replace-with-the-worker-shared-key
+```
 
-## Screenshots
+`OIDC_REDIRECT_URL` must exactly match the callback registered in Authentik and the public host routed by Traefik. The issuer must match Authentik's discovery metadata. Keep the credentials and API key in the server-side `.env`, not in the React application or Git.
 
-<p align="left">
-    <img height="550" src="https://raw.githubusercontent.com/navidrome/navidrome/master/.github/screenshots/ss-mobile-login.png">
-    <img height="550" src="https://raw.githubusercontent.com/navidrome/navidrome/master/.github/screenshots/ss-mobile-player.png">
-    <img height="550" src="https://raw.githubusercontent.com/navidrome/navidrome/master/.github/screenshots/ss-mobile-album-view.png">
-    <img width="550" src="https://raw.githubusercontent.com/navidrome/navidrome/master/.github/screenshots/ss-desktop-player.png">
-</p>
+`MUSIC_USERS_ROOT`, `LYRICS_URL`, `LYRICS_INTERVAL`, and `MUSICASYT_*` are Musicas-specific settings. `MUSICAS_HOST`, `TRAEFIK_NETWORK`, and `MUSICAS_ROOT` are used by the Docker Compose example.
+
+`LYRICS_INTERVAL` accepts Go durations such as `6h`, `12h`, or `24h`; use `0` to disable scheduled lyrics scans. The YouTube page requires both `MUSICASYT_URL` and `MUSICASYT_API_KEY` and is otherwise unavailable for synchronization.
+
+## Docker Compose
+
+The included `docker-compose.oidc.yml` builds from the current source, mounts persistent data, and uses an external reverse-proxy network. Its essential configuration is:
+
+```yaml
+services:
+  musica:
+    image: musicas:local
+    build:
+      context: .
+    user: "1000:1000"
+    env_file:
+      - ../.env
+    volumes:
+      - ../data:/data
+      - ../music:/music
+    restart: unless-stopped
+    networks:
+      - reverse_proxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=traefik
+      - traefik.http.routers.musica.rule=Host(`music.example.com`)
+      - traefik.http.routers.musica.service=musica
+      - traefik.http.services.musica.loadbalancer.server.port=4553
+
+networks:
+  reverse_proxy:
+    external: true
+    name: traefik
+```
+
+This is an illustration of the deployment settings; use the repository's `docker-compose.oidc.yml` to start the service. The external network must exist and Traefik must be connected to it. Replace all example hostnames and secrets before deploying.
+
+From `build/`, run:
+
+```bash
+docker compose --env-file ../.env -f docker-compose.oidc.yml up -d --build
+```
+
+View the logs with:
+
+```bash
+docker compose --env-file ../.env -f docker-compose.oidc.yml logs -f musica
+```
+
+After a source update, rebuild and recreate the container, then hard-refresh the browser. **Keep the existing `/data` and `/music` directories when updating Musicas.** Do not run multiple Musicas instances against the same SQLite database.
+
+## Music libraries and playlists
+
+Musicas uses Navidrome's native library system:
+
+- `/music/public` is the shared **Public** library.
+- `/music/users/<username>` is the private library associated with an Authentik user.
+- A user can access the shared library and their own private library; administrator permissions may provide wider access.
+- Each direct child folder in a private library becomes a **private native smart playlist** after scanning. Nested files are included in that playlist.
+
+For example, adding `music/users/alice/Road Trip/track.mp3` and scanning Alice's library creates a private **Road Trip** playlist. Public folders are not converted into managed playlists.
+
+These playlists live in Navidrome's normal repository, not in generated `.nsp` or `.m3u` files. `ND_AUTOIMPORTPLAYLISTS=false` disables the separate file-based playlist importer.
+
+## Files
+
+The **Files** page manages only the signed-in user's private library. It supports folder browsing and creation, file or folder uploads, ZIP extraction, deletion, targeted library scans, and folder ZIP downloads (including available transcoding options).
+
+Uploaded music must be indexed by a library scan before it appears in the player or indexed folder downloads. Deletion is permanent. A local administrator without a provisioned private library may not have access to this page.
+
+## Lyrics
+
+The **Lyrics** page is part of Musicas itself; it does not require another service, container, job queue, or lyrics database. Musicas contacts an LRCLIB-compatible server using `LYRICS_URL`.
+
+- **Automatic scans:** scan one indexed song at a time, skipping songs with existing supported lyrics. Manual folder scans include subfolders; **Scan all folders** covers the signed-in user's private library. Scheduled scans cover all libraries.
+- **One active scan:** scheduled and manual scans share a single in-memory lock. The page shows the scan status and, for the user's own scan, progress information.
+- **Manual search:** search LRCLIB by title or artist, preview the results, find a song in your private library, and explicitly attach the selected lyrics. Manual selection can replace an existing sidecar and remains available during a scan.
+- **Storage:** synchronized lyrics are saved as `.lrc`; plain lyrics as `.txt`, beside the audio file with the same basename. The audio file is not renamed or rewritten.
+- **Playback:** the player uses Navidrome's native lyrics support, including the Subsonic `getLyricsBySongId` endpoint and its configured `LyricsPriority`.
+
+For example:
+
+```text
+/music/users/alice/Road Trip/
+├── Song.mp3
+└── Song.lrc
+```
+
+Existing supported sidecars are not overwritten by automatic scans. `LYRICS_INTERVAL=0` disables the scheduled scan, but manual search and scans remain available.
+
+## YouTube Music
+
+The **YouTube** page can synchronize supported YouTube Music playlists using the optional, separate [MusicasYT](https://github.com/ribas89/musicasyt) worker. **YouTube downloads are not performed by the Navidrome process.**
+
+Musicas authenticates the user, sends synchronization requests from the Go backend using the shared API key, and displays job progress. The worker downloads into the same per-user music directories mounted in both containers; Musicas requests a private-library scan when a job completes.
+
+The worker sees those folders at `/users/<username>`, while Musicas sees them at `/music/users/<username>`. Both mounts must reference the **same host directory**. Playlist state is stored in each user's `musicasyt.json`; the YouTube page reads it without needing to start a synchronization job. Unavailable and failed tracks in playlist cards link to their YouTube Music videos when a video ID is recorded.
+
+Configure `MUSICASYT_API_KEY` with the **same secret** in Musicas and MusicasYT. Generate one with:
+
+```bash
+openssl rand -hex 32
+```
+
+The worker's full installation and API instructions are in the [MusicasYT repository](https://github.com/ribas89/musicasyt).
+
+## APIs
+
+Musicas retains Navidrome's Subsonic/OpenSubsonic API for playback and client integrations. Custom routes are authenticated and operate within the signed-in user's library permissions:
+
+| Route | Purpose |
+| --- | --- |
+| `/api/files/*` | Private file management and library scans |
+| `/api/lyrics/status`, `/api/lyrics/folders`, `/api/lyrics/scan` | Lyrics scan status and controls |
+| `/api/lyrics/search`, `/api/lyrics/songs`, `/api/lyrics/apply` | Manual lyrics search and attachment |
+| `/api/youtube/status`, `/api/youtube/playlists` | Worker status and user playlist snapshots |
+| `/api/youtube/sync`, `/api/youtube/jobs/{playlistID}` | Start and monitor playlist synchronization |
+| `DELETE /api/youtube/playlists/{playlistID}` | Delete a synchronized playlist and its files |
+
+## Troubleshooting
+
+| Problem | Check |
+| --- | --- |
+| Authentik login fails | Verify issuer, RS256 provider, `preferred_username`, client credentials, and the exact HTTPS callback URL. |
+| Files cannot create or upload | Verify UID:GID `1000:1000` has write access to the private library. |
+| A private playlist is missing | Confirm the folder is directly under the user's private library and run a library scan. |
+| Lyrics do not appear | Confirm a matching sidecar exists, check `LyricsPriority`, and inspect `getLyricsBySongId` in browser Network tools. |
+| YouTube synchronization is unavailable | Verify worker reachability, the matching API key, and the shared user-library mount. |
+| Changes do not appear after deployment | Rebuild the Docker image and hard-refresh the browser. |
+
+For backend diagnostics, set `ND_LOGLEVEL=debug` temporarily and inspect the container logs. Debug logs may include music filenames and filesystem paths; do not publish full logs without reviewing them.
+
+## Upstream and license
+
+Musicas is a fork of [Navidrome Music Server](https://github.com/navidrome/navidrome), not an official Navidrome release. The original upstream license, notices, and project documentation remain in the source tree. See [Navidrome documentation](https://www.navidrome.org/docs/) for standard player, scanner, and Subsonic functionality.

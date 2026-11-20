@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import PropTypes from 'prop-types'
 import { Field, Form } from 'react-final-form'
 import { useDispatch } from 'react-redux'
@@ -23,6 +23,8 @@ import Logo from '../icons/android-icon-192x192.png'
 import Notification from './Notification'
 import useCurrentTheme from '../themes/useCurrentTheme'
 import config from '../config'
+import { baseUrl } from '../utils'
+import { storeAuthenticationInfo } from '../authProvider'
 import { clearQueue } from '../actions'
 import { INSIGHTS_DOC_URL } from '../consts.js'
 
@@ -115,44 +117,50 @@ const renderInput = ({
 const FormLogin = ({ loading, handleSubmit, validate }) => {
   const translate = useTranslate()
   const classes = useStyles()
+  const [oidcLoading, setOidcLoading] = useState(false)
+
+  const handleOIDCLogin = () => {
+    // Native link navigation happens on the first click, without submitting or
+    // validating the separate local username/password form.
+    setOidcLoading(true)
+  }
 
   return (
     <Form
       onSubmit={handleSubmit}
       validate={validate}
       render={({ handleSubmit }) => (
-        <form onSubmit={handleSubmit} noValidate>
-          <div className={classes.main}>
-            <Card className={classes.card}>
-              <div className={classes.avatar}>
-                <img src={Logo} className={classes.icon} alt={'logo'} />
-              </div>
-              <div className={classes.systemName}>
-                <a
-                  href="https://www.navidrome.org"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className={classes.systemNameLink}
-                >
-                  Navidrome
-                </a>
-              </div>
-              {config.welcomeMessage && (
-                <div
-                  className={classes.welcome}
-                  // Use dangerouslySetInnerHTML to allow admins to configure
-                  // whatever content they want
-                  dangerouslySetInnerHTML={{ __html: config.welcomeMessage }}
-                />
-              )}
+        <div className={classes.main}>
+          <Card className={classes.card}>
+            <div className={classes.avatar}>
+              <img src={Logo} className={classes.icon} alt={'logo'} />
+            </div>
+            <div className={classes.systemName}>
+              <a
+                href="https://www.navidrome.org"
+                target="_blank"
+                rel="noopener noreferrer"
+                className={classes.systemNameLink}
+              >
+                Navidrome
+              </a>
+            </div>
+            {config.welcomeMessage && (
+              <div
+                className={classes.welcome}
+                // Allow admins to configure welcome HTML.
+                dangerouslySetInnerHTML={{ __html: config.welcomeMessage }}
+              />
+            )}
+            <form onSubmit={handleSubmit} noValidate>
               <div className={classes.form}>
                 <div className={classes.input}>
                   <Field
-                    autoFocus
+                    autoFocus={!config.oidcEnabled}
                     name="username"
                     component={renderInput}
                     label={translate('ra.auth.username')}
-                    disabled={loading}
+                    disabled={loading || oidcLoading}
                     spellCheck={false}
                   />
                 </div>
@@ -162,7 +170,7 @@ const FormLogin = ({ loading, handleSubmit, validate }) => {
                     component={renderInput}
                     label={translate('ra.auth.password')}
                     type="password"
-                    disabled={loading}
+                    disabled={loading || oidcLoading}
                   />
                 </div>
               </div>
@@ -171,7 +179,7 @@ const FormLogin = ({ loading, handleSubmit, validate }) => {
                   variant="contained"
                   type="submit"
                   color="primary"
-                  disabled={loading}
+                  disabled={loading || oidcLoading}
                   className={classes.button}
                   fullWidth
                 >
@@ -179,10 +187,32 @@ const FormLogin = ({ loading, handleSubmit, validate }) => {
                   {translate('ra.auth.sign_in')}
                 </Button>
               </CardActions>
-            </Card>
-            <Notification />
-          </div>
-        </form>
+            </form>
+            {config.oidcEnabled && (
+              <CardActions className={classes.actions}>
+                <Button
+                  component="a"
+                  href={baseUrl('/auth/oidc/start')}
+                  onClick={handleOIDCLogin}
+                  variant="outlined"
+                  color="primary"
+                  fullWidth
+                  disabled={loading || oidcLoading}
+                >
+                  {oidcLoading && (
+                    <CircularProgress
+                      size={18}
+                      thickness={4}
+                      style={{ marginRight: 10 }}
+                    />
+                  )}
+                  {oidcLoading ? 'Redirecting to Authentik...' : 'Login with Authentik'}
+                </Button>
+              </CardActions>
+            )}
+          </Card>
+          <Notification />
+        </div>
       )}
     />
   )
@@ -327,9 +357,31 @@ const Login = ({ location }) => {
   const checkAuth = useCheckAuth()
   const history = useHistory()
 
+  const oidcSessionStarted = useRef(false)
+
+  // Complete OIDC in the same-origin UI. A short-lived, HttpOnly cookie
+  // holds the ticket until this fetch consumes it; no auth tokens in URLs.
+  useEffect(() => {
+    if (!window.location.search.includes('oidc=1') || oidcSessionStarted.current) return
+    oidcSessionStarted.current = true
+    fetch(baseUrl('/auth/oidc/session'), { credentials: 'same-origin' })
+      .then((response) => {
+        if (!response.ok) throw new Error('Authentik sign-in could not be completed')
+        return response.json()
+      })
+      .then((authInfo) => {
+        storeAuthenticationInfo(authInfo)
+        window.location.replace(baseUrl('/app/') + '#/')
+      })
+      .catch((error) => notify(error.message, 'warning'))
+  }, [notify])
+
   // Signed-in users opening #/login go straight to the app;
   // replace keeps Back from bouncing.
   useEffect(() => {
+    // OIDC is completing a new authentication transaction: do not let an
+    // older local session redirect away before /auth/oidc/session finishes.
+    if (window.location.search.includes('oidc=1')) return
     checkAuth({}, false)
       .then(() => history.replace('/'))
       .catch(() => {})

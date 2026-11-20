@@ -69,6 +69,10 @@ func NewLyrics(ds model.DataStore, pluginLoader PluginLoader) Lyrics {
 // GetLyrics returns lyrics for the given media file, trying sources in the
 // order specified by conf.Server().LyricsPriority.
 func (l *lyricsService) GetLyrics(ctx context.Context, mf *model.MediaFile) (model.LyricList, error) {
+	if mf != nil {
+		ctx = log.NewContext(ctx, "lyricsSongId", mf.ID)
+		log.Debug(ctx, "Lyrics: starting native lookup", "path", mf.Path, "priority", conf.Server().LyricsPriority)
+	}
 	return l.getLyricsForCandidates(ctx, []*model.MediaFile{mf})
 }
 
@@ -119,6 +123,7 @@ func (l *lyricsService) getLyricsForCandidates(ctx context.Context, mediaFiles [
 				continue
 			}
 
+			log.Debug(ctx, "Lyrics: checking source", "source", pattern, "path", mf.Path)
 			lyricsList, err := l.getLyricsFromSource(ctx, mf, pattern)
 			if err != nil {
 				log.Error(ctx, "error getting lyrics", "source", pattern, err)
@@ -126,11 +131,14 @@ func (l *lyricsService) getLyricsForCandidates(ctx context.Context, mediaFiles [
 			}
 
 			if len(lyricsList) > 0 {
+				log.Debug(ctx, "Lyrics: source matched", "source", pattern, "entries", len(lyricsList), "lines", len(lyricsList[0].Line), "synced", lyricsList[0].Synced)
 				return lyricsList, nil
 			}
+			log.Debug(ctx, "Lyrics: source returned no lyrics", "source", pattern)
 		}
 	}
 
+	log.Debug(ctx, "Lyrics: lookup finished with no match", "candidateCount", len(mediaFiles))
 	return nil, nil
 }
 

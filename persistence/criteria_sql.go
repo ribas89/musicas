@@ -176,6 +176,12 @@ func (c smartPlaylistCriteria) exprSQL(expr criteria.Expression) (squirrel.Sqliz
 	case criteria.NotContains:
 		return likeExpr(e, "%%%v%%", true)
 	case criteria.StartsWith:
+		// Folder smart playlists must match a literal, case-sensitive
+		// path prefix. LIKE treats '_' and '%' as wildcards and is often
+		// case-insensitive, which could include tracks from sibling folders.
+		if prefix, ok := e["filepath"].(string); ok && len(e) == 1 {
+			return squirrel.Expr("substr(media_file.path, 1, length(?)) = ?", prefix, prefix), nil
+		}
 		return likeExpr(e, "%v%%", false)
 	case criteria.EndsWith:
 		return likeExpr(e, "%%%v", false)

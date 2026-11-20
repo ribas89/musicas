@@ -17,3 +17,7 @@ cache
 music
 music.old
 !Dockerfile
+# Never include runtime secrets in a build context
+.env
+.env.*
+!*.example

@@ -8,6 +8,7 @@ import (
 
 	"github.com/Masterminds/squirrel"
 	"github.com/deluan/rest"
+	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/consts"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
@@ -17,6 +18,7 @@ import (
 	"github.com/navidrome/navidrome/utils/slice"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pocketbase/dbx"
 )
 
 var _ = Describe("UserRepository", func() {
@@ -809,6 +811,119 @@ var _ = Describe("UserRepository", func() {
 
 			Expect(signalled).To(HaveLen(len(slice.Unique(signalled))),
 				"an epoch was signalled to more than one writer: %v", signalled)
+		})
+	})
+
+	Describe("OIDC-linked profile management", func() {
+		var account model.User
+		var adminCtx context.Context
+
+		BeforeEach(func() {
+			adminCtx = request.WithUser(ctx, model.User{ID: "fixture-admin", IsAdmin: true})
+			account = model.User{
+				ID: id.NewRandom(), UserName: "authentik_" + id.NewRandom()[:8],
+				Name: "Authentik user", NewPassword: "already-set-password",
+			}
+			Expect(repo.Put(adminCtx, &account)).To(Succeed())
+			_, err := GetDBXBuilder().NewQuery(
+				"INSERT INTO oidc_identity (issuer, subject, user_id) VALUES ('https://auth.example', {:subject}, {:id})",
+			).Bind(dbx.Params{"subject": account.ID, "id": account.ID}).Execute()
+			Expect(err).ToNot(HaveOccurred())
+			conf.Update(func(c *conf.Options) { c.EnableUserEditing = true })
+		})
+
+		AfterEach(func() {
+			Expect(repo.Delete(adminCtx, account.ID)).To(Succeed())
+		})
+
+		It("keeps normal-user password checks when the authenticated actor has no DB password", func() {
+			local := model.User{ID: id.NewRandom(), UserName: "local_" + id.NewRandom()[:8],
+				Name: "Local user", NewPassword: "oldpass"}
+			Expect(repo.Put(adminCtx, &local)).To(Succeed())
+			DeferCleanup(func() { Expect(repo.Delete(adminCtx, local.ID)).To(Succeed()) })
+			actorCtx := request.WithUser(ctx, model.User{ID: local.ID, UserName: local.UserName})
+			change := local
+			change.NewPassword = "newpass"
+			change.CurrentPassword = ""
+			Expect(repo.Update(actorCtx, local.ID, change)).NotTo(Succeed())
+			change.CurrentPassword = "oldpass"
+			Expect(repo.Update(actorCtx, local.ID, change)).To(Succeed())
+			updated, err := repo.FindByUsernameWithPassword(ctx, local.UserName)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(updated.Password).To(Equal("newpass"))
+		})
+
+		It("exposes OIDC linkage in the user record and allows password rotation without current password", func() {
+			stored, err := repo.Get(ctx, account.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(stored.OIDCLinked).To(BeTrue())
+
+			// JWT request context contains identity, not the encrypted DB password.
+			selfCtx := request.WithUser(ctx, model.User{ID: stored.ID, UserName: stored.UserName})
+			change := *stored
+			change.NewPassword = "short"
+			change.CurrentPassword = ""
+			Expect(repo.Update(selfCtx, account.ID, change)).To(Succeed())
+
+			updated, err := repo.FindByUsernameWithPassword(ctx, account.UserName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Password).To(Equal("short"))
+
+			// Password rotation remains possible after the generated password is gone.
+			second := *updated
+			second.NewPassword = "another"
+			second.CurrentPassword = ""
+			Expect(repo.Update(request.WithUser(ctx, model.User{ID: updated.ID, UserName: updated.UserName}), account.ID, second)).To(Succeed())
+			updated, err = repo.FindByUsernameWithPassword(ctx, account.UserName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(updated.Password).To(Equal("another"))
+		})
+
+		It("ignores incorrect current passwords for OIDC-linked users, even if the browser supplied one", func() {
+			selfCtx := request.WithUser(ctx, model.User{ID: account.ID, UserName: account.UserName})
+			change, err := repo.Get(ctx, account.ID)
+			Expect(err).ToNot(HaveOccurred())
+			change.OIDCLinked = false // client cannot disable the authoritative DB link
+			change.NewPassword = "rotated"
+			change.CurrentPassword = "this-is-not-the-old-password"
+			Expect(repo.Update(selfCtx, account.ID, *change)).To(Succeed())
+			got, err := repo.FindByUsernameWithPassword(ctx, account.UserName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(got.Password).To(Equal("rotated"))
+		})
+
+		It("loads the OIDC avatar and linkage directly from the identity table", func() {
+			_, err := GetDBXBuilder().NewQuery("UPDATE oidc_identity SET avatar = {:avatar} WHERE user_id = {:id}").
+				Bind(dbx.Params{"avatar": "https://auth.example/avatar.png", "id": account.ID}).Execute()
+			Expect(err).ToNot(HaveOccurred())
+			byID, err := repo.Get(ctx, account.ID)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(byID.OIDCLinked).To(BeTrue())
+			Expect(byID.Avatar).To(Equal("https://auth.example/avatar.png"))
+			byName, err := repo.FindByUsername(ctx, account.UserName)
+			Expect(err).ToNot(HaveOccurred())
+			Expect(byName.OIDCLinked).To(BeTrue())
+			Expect(byName.Avatar).To(Equal(byID.Avatar))
+		})
+
+		It("rejects an OIDC username change, including by an administrator", func() {
+			stored, err := repo.Get(adminCtx, account.ID)
+			Expect(err).ToNot(HaveOccurred())
+			stored.UserName = "renamed"
+			err = repo.Update(adminCtx, account.ID, *stored)
+			var validation *rest.ValidationError
+			Expect(errors.As(err, &validation)).To(BeTrue())
+			Expect(validation.Errors).To(HaveKey("userName"))
+		})
+
+		It("rejects changing the Authentik-controlled display name", func() {
+			stored, err := repo.Get(adminCtx, account.ID)
+			Expect(err).ToNot(HaveOccurred())
+			stored.Name = "Renamed display name"
+			err = repo.Update(adminCtx, account.ID, *stored)
+			var validation *rest.ValidationError
+			Expect(errors.As(err, &validation)).To(BeTrue())
+			Expect(validation.Errors).To(HaveKey("name"))
 		})
 	})
 

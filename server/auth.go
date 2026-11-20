@@ -72,12 +72,16 @@ func doLogin(ds model.DataStore, username string, password string, w http.Respon
 
 func buildAuthPayload(user *model.User) map[string]any {
 	payload := map[string]any{
-		"id":       user.ID,
-		"name":     user.Name,
-		"username": user.UserName,
-		"isAdmin":  user.IsAdmin,
+		"id":         user.ID,
+		"name":       user.Name,
+		"username":   user.UserName,
+		"isAdmin":    user.IsAdmin,
+		"oidcLinked": user.OIDCLinked,
 	}
-	if conf.Server().EnableGravatar && user.Email != "" {
+	if user.Avatar != "" {
+		// Prefer Authentik's verified OIDC image over Navidrome's Gravatar fallback.
+		payload["avatar"] = user.Avatar
+	} else if conf.Server().EnableGravatar && user.Email != "" {
 		payload["avatar"] = gravatar.Url(user.Email, 50)
 	}
 

@@ -22,6 +22,7 @@ import {
   currentPlaying,
   refreshQueue,
   setPlayMode,
+  setLyrics,
   setTranscodingProfile,
   setVolume,
   syncQueue,
@@ -34,6 +35,34 @@ import { keyMap } from '../hotkeys'
 import keyHandlers from './keyHandlers'
 import { calculateGain } from '../utils/calculateReplayGain'
 import { detectBrowserProfile, decisionService } from '../transcode'
+
+const padLyricsTime = (value) => String(value).padStart(2, '0')
+
+const debugLyrics = (event, details) => {
+  // eslint-disable-next-line no-console
+  console.debug(`[Lyrics Debug] ${event}`, details)
+}
+
+const lyricsToPlayerText = (structuredLyrics) => {
+  const entries = Array.isArray(structuredLyrics) ? structuredLyrics : []
+  const selected = entries.find((entry) => entry.synced && entry.line?.length) ||
+    entries.find((entry) => entry.line?.length)
+  if (!selected) return ''
+
+  if (!selected.synced) {
+    return selected.line.map((line) => line.value || '').filter(Boolean).join('\n')
+  }
+
+  return selected.line.map((line) => {
+    if (!Number.isFinite(Number(line.start))) return ''
+    let time = Math.max(0, Math.floor(Number(line.start) / 10))
+    const centiseconds = time % 100
+    time = Math.floor(time / 100)
+    const seconds = time % 60
+    const minutes = Math.floor(time / 60)
+    return `[${padLyricsTime(minutes)}:${padLyricsTime(seconds)}.${padLyricsTime(centiseconds)}] ${line.value || ''}`
+  }).filter(Boolean).join('\n')
+}
 
 const Player = () => {
   const theme = useCurrentTheme()
@@ -48,6 +77,7 @@ const Player = () => {
   const currentTrackIdRef = useRef(null)
   const stoppedRef = useRef(false)
   const [audioInstance, setAudioInstance] = useState(null)
+  const musicPlayerRef = useRef(null)
   const isDesktop = useMediaQuery('(min-width:810px)')
   const isMobilePlayer =
     /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
@@ -62,6 +92,114 @@ const Player = () => {
   playerStateRef.current = playerState
 
   currentTrackIdRef.current = currentTrackId
+
+  const activeTrackId = playerState.current?.trackId
+  const activeTrackIsRadio = playerState.current?.isRadio
+  const lyricsRequestRef = useRef(0)
+  const lyricsPlayingTrackRef = useRef(null)
+
+  const requestTrackLyrics = useCallback((trackId, trigger) => {
+    if (!trackId) return
+    const requestId = ++lyricsRequestRef.current
+    debugLyrics('request started', { trackId, trigger, endpoint: 'getLyricsBySongId' })
+    subsonic.getLyricsBySongId(trackId)
+      .then(({ json }) => {
+        if (requestId !== lyricsRequestRef.current ||
+            lyricsPlayingTrackRef.current !== trackId) {
+          debugLyrics('response ignored (track changed or newer request)', { trackId, trigger })
+          return
+        }
+        const response = json?.['subsonic-response'] || {}
+        if (response.status !== 'ok') {
+          debugLyrics('request returned error', {
+            trackId,
+            trigger,
+            errorCode: response.error?.code,
+          })
+          return
+        }
+        const structured = response.lyricsList?.structuredLyrics || []
+        const lyric = lyricsToPlayerText(structured)
+        debugLyrics('response received', {
+          trackId,
+          trigger,
+          status: response.status,
+          entryCount: Array.isArray(structured) ? structured.length : 0,
+          entries: Array.isArray(structured)
+            ? structured.map(({ synced, line }) => ({
+                synced,
+                lineCount: Array.isArray(line) ? line.length : 0,
+              }))
+            : 'unexpected format',
+          formattedCharacters: lyric.length,
+        })
+        dispatch(setLyrics(trackId, lyric))
+        debugLyrics('lyrics dispatched to player', { trackId, trigger, hasText: lyric.length > 0 })
+      })
+      .catch((error) => {
+        if (requestId !== lyricsRequestRef.current) return
+        debugLyrics('request failed', {
+          trackId,
+          trigger,
+          errorType: error?.name,
+          httpStatus: error?.status,
+        })
+      })
+  }, [dispatch])
+
+  // The player has no public callback for the native Lyrics button.
+  // Listen for clicks on its existing control (including clicks on the icon).
+  useEffect(() => {
+    const onLyricsClick = (event) => {
+      if (!event.target?.closest?.('.react-jinke-music-player-main .lyric-btn, .react-jinke-music-player-main .lyric-btn-active')) return
+      const current = playerStateRef.current.current
+      if (!current?.trackId || current.isRadio) return
+      lyricsPlayingTrackRef.current = current.trackId
+      requestTrackLyrics(current.trackId, 'lyrics button')
+    }
+    document.addEventListener('click', onLyricsClick, true)
+    return () => document.removeEventListener('click', onLyricsClick, true)
+  }, [requestTrackLyrics])
+
+  useEffect(() => {
+    if (!activeTrackId || activeTrackIsRadio) return
+    debugLyrics('player state updated', {
+      trackId: activeTrackId,
+      currentTrackId: playerState.current?.trackId,
+      hasLyrics: Boolean(playerState.current?.lyric),
+      lyricCharacters: playerState.current?.lyric?.length || 0,
+    })
+  }, [activeTrackId, activeTrackIsRadio, playerState.current?.lyric, playerState.current?.trackId])
+
+  // The player keeps its own lyrics state. Sync it from the loaded queue
+  // when the queue changes and after the next track has begun progressing.
+  const applyActivePlayerLyrics = useCallback((trackId, trigger) => {
+    const musicPlayer = musicPlayerRef.current
+    const internalState = musicPlayer?.state
+    if (!trackId || !internalState) return
+
+    const playingItem = internalState.audioLists?.find(
+      (item) => item.__PLAYER_KEY__ === internalState.playId,
+    )
+    if (playingItem?.trackId !== trackId) return
+
+    const queuedItem = playerStateRef.current.queue.find(
+      (item) => item.uuid === playingItem.uuid,
+    )
+    if (!queuedItem || typeof queuedItem.lyric !== 'string') return
+    if (queuedItem.lyric === internalState.lyric) return
+
+    musicPlayer.setState({ lyric: queuedItem.lyric })
+    debugLyrics('active player lyrics applied', {
+      trackId,
+      trigger,
+      formattedCharacters: queuedItem.lyric.length,
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!activeTrackIsRadio) applyActivePlayerLyrics(activeTrackId, 'queue update')
+  }, [activeTrackId, activeTrackIsRadio, playerState.queue, applyActivePlayerLyrics])
 
   useInterval(
     () => {
@@ -270,7 +408,11 @@ const Player = () => {
     if (!info.isRadio && info.currentTime != null) {
       lastPositionMsRef.current = Math.floor(info.currentTime * 1000)
     }
-  }, [])
+    if (info.trackId && !info.isRadio &&
+        playerStateRef.current.current?.trackId === info.trackId) {
+      applyActivePlayerLyrics(info.trackId, 'playback progress')
+    }
+  }, [applyActivePlayerLyrics])
 
   const onAudioVolumeChange = useCallback(
     // sqrt to compensate for the logarithmic volume
@@ -285,6 +427,13 @@ const Player = () => {
       }
 
       dispatch(currentPlaying(info))
+      // The player is now on this track. Fetch here rather than during the
+      // earlier Redux transition, when the player can still reset its lyrics.
+      if (info.trackId && !info.isRadio &&
+          lyricsPlayingTrackRef.current !== info.trackId) {
+        lyricsPlayingTrackRef.current = info.trackId
+        requestTrackLyrics(info.trackId, 'playback started')
+      }
       if (info.duration) {
         const song = info.song
         document.title = `${song.title} - ${song.artist} - Navidrome`
@@ -293,6 +442,11 @@ const Player = () => {
           lastPositionMsRef.current = posMs
           const isNewTrack = info.trackId !== currentTrackId
           if (isNewTrack) {
+            debugLyrics('playback started', {
+              trackId: info.trackId,
+              title: song.title,
+              initialLyricsCharacters: info.lyric?.length || 0,
+            })
             subsonic
               .reportPlayback(info.trackId, posMs, 'starting')
               .then(() =>
@@ -320,7 +474,7 @@ const Player = () => {
         }
       }
     },
-    [context, dispatch, showNotifications, currentTrackId],
+    [context, dispatch, showNotifications, currentTrackId, requestTrackLyrics],
   )
 
   const onAudioPlayTrackChange = useCallback(() => {
@@ -456,6 +610,7 @@ const Player = () => {
   return (
     <ThemeProvider theme={createMuiTheme(theme)}>
       <ReactJkMusicPlayer
+        ref={musicPlayerRef}
         {...options}
         className={classes.player}
         onAudioListsChange={onAudioListsChange}

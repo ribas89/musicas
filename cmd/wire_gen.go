@@ -82,7 +82,15 @@ func CreateNativeAPIRouter(ctx context.Context) *nativeapi.Router {
 	matcherMatcher := matcher.New(dataStore)
 	provider := external.NewProvider(dataStore, agentsAgents, matcherMatcher, broker)
 	quickConnect := quickconnect.GetInstance()
-	router := nativeapi.New(dataStore, share, playlistsPlaylists, insights, library, user, maintenance, manager, uploader, provider, quickConnect)
+	fileCache := artwork.GetImageCache()
+	imageStore := artwork.GetImageStore()
+	fFmpeg := ffmpeg.New()
+	artworkArtwork := artwork.NewArtwork(dataStore, fileCache, imageStore, fFmpeg)
+	transcodingCache := stream.GetTranscodingCache()
+	mediaStreamer := stream.NewMediaStreamer(dataStore, fFmpeg, transcodingCache)
+	transcodeDecider := stream.NewTranscodeDecider(dataStore, fFmpeg)
+	archiver := core.NewArchiver(mediaStreamer, transcodeDecider, dataStore, share, artworkArtwork)
+	router := nativeapi.New(dataStore, share, playlistsPlaylists, insights, library, user, maintenance, manager, uploader, provider, quickConnect, modelScanner, archiver)
 	return router
 }
 

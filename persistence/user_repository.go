@@ -31,9 +31,13 @@ type userRepository struct {
 type dbUser struct {
 	*model.User   `structs:",flatten"`
 	LibrariesJSON string `structs:"-" json:"-"`
+	OIDCLinked    bool   `structs:"-" json:"-"`
+	OIDCAvatar    string `structs:"-" json:"-"`
 }
 
 func (u *dbUser) PostScan() error {
+	u.User.OIDCLinked = u.OIDCLinked
+	u.User.Avatar = u.OIDCAvatar
 	if u.LibrariesJSON != "" {
 		if err := json.Unmarshal([]byte(u.LibrariesJSON), &u.Libraries); err != nil {
 			return fmt.Errorf("parsing user libraries from db: %w", err)
@@ -72,6 +76,8 @@ func NewUserRepository(db dbx.Builder) model.UserRepository {
 func (r *userRepository) selectUserWithLibraries(ctx context.Context, options ...model.QueryOptions) SelectBuilder {
 	return r.newSelect(ctx, options...).
 		Columns(`user.*`,
+			`EXISTS (SELECT 1 FROM oidc_identity oi WHERE oi.user_id = user.id) AS oidc_linked`,
+			`COALESCE((SELECT oi.avatar FROM oidc_identity oi WHERE oi.user_id = user.id), '') AS oidc_avatar`,
 			`COALESCE(json_group_array(json_object(
 				'id', library.id,
 				'name', library.name,
@@ -89,6 +95,30 @@ func (r *userRepository) selectUserWithLibraries(ctx context.Context, options ..
 		GroupBy("user.id")
 }
 
+// oidcProfile is the authoritative OIDC-account lookup. Do not infer linkage
+// from client JSON, JWT claims or scanner aliases: these can omit derived fields.
+func (r *userRepository) oidcProfile(ctx context.Context, userID string) (bool, string, error) {
+	var profile struct{ Avatar string }
+	err := r.queryOne(ctx, Select("avatar").From("oidc_identity").Where(Eq{"user_id": userID}), &profile)
+	if errors.Is(err, model.ErrNotFound) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", fmt.Errorf("reading OIDC profile: %w", err)
+	}
+	return true, profile.Avatar, nil
+}
+
+func (r *userRepository) loadOIDCProfile(ctx context.Context, u *model.User) error {
+	linked, avatar, err := r.oidcProfile(ctx, u.ID)
+	if err != nil {
+		return err
+	}
+	u.OIDCLinked = linked
+	u.Avatar = avatar
+	return nil
+}
+
 func (r *userRepository) CountAll(ctx context.Context, qo ...model.QueryOptions) (int64, error) {
 	return r.count(ctx, Select(), qo...)
 }
@@ -98,6 +128,9 @@ func (r *userRepository) Get(ctx context.Context, id string) (*model.User, error
 	var res dbUser
 	err := r.queryOne(ctx, sel, &res)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.loadOIDCProfile(ctx, res.User); err != nil {
 		return nil, err
 	}
 	return res.User, nil
@@ -110,7 +143,13 @@ func (r *userRepository) GetAll(ctx context.Context, options ...model.QueryOptio
 	if err != nil {
 		return nil, err
 	}
-	return res.toModels(), nil
+	users := res.toModels()
+	for i := range users {
+		if err := r.loadOIDCProfile(ctx, &users[i]); err != nil {
+			return nil, err
+		}
+	}
+	return users, nil
 }
 
 func (r *userRepository) Put(ctx context.Context, u *model.User) error {
@@ -196,6 +235,9 @@ func (r *userRepository) FindFirstAdmin(ctx context.Context) (*model.User, error
 	if err != nil {
 		return nil, err
 	}
+	if err := r.loadOIDCProfile(ctx, usr.User); err != nil {
+		return nil, err
+	}
 	return usr.User, nil
 }
 
@@ -204,6 +246,9 @@ func (r *userRepository) FindByUsername(ctx context.Context, username string) (*
 	var usr dbUser
 	err := r.queryOne(ctx, sel, &usr)
 	if err != nil {
+		return nil, err
+	}
+	if err := r.loadOIDCProfile(ctx, usr.User); err != nil {
 		return nil, err
 	}
 	return usr.User, nil
@@ -288,12 +333,52 @@ func (r *userRepository) Update(ctx context.Context, id string, entity model.Use
 		u.UserName = usr.UserName
 	}
 
-	// Decrypt the user's existing password before validating. This is required otherwise the existing password entered by the user will never match.
-	if err := r.decryptPassword(ctx, usr); err != nil {
+	// The OIDC mapping is read from SQLite, not from user-submitted JSON.
+	// Renaming an OIDC user would break both Authentik identity mapping and
+	// the matching /music/users/<username> private library.
+	existing, err := r.Get(ctx, u.ID)
+	if err != nil {
 		return err
 	}
-	if err := validatePasswordChange(u, usr); err != nil {
-		return err
+	if existing.OIDCLinked {
+		// React-admin may omit disabled inputs from an update payload.
+		// Missing values retain the server-side identity; non-empty changes fail.
+		if u.UserName == "" {
+			u.UserName = existing.UserName
+		}
+		if u.Name == "" {
+			u.Name = existing.Name
+		}
+		violations := map[string]string{}
+		if u.UserName != existing.UserName {
+			violations["userName"] = "OIDC usernames are managed by Authentik"
+		}
+		if u.Name != existing.Name {
+			violations["name"] = "OIDC names are managed by Authentik"
+		}
+		if len(violations) > 0 {
+			return &rest.ValidationError{Errors: violations}
+		}
+	}
+
+	if existing.OIDCLinked {
+		// The Authentik-linked account is confirmed directly from the OIDC
+		// identity row. Its separate Navidrome password can be replaced
+		// without the old password, even when an old browser still sends it.
+		u.CurrentPassword = ""
+	} else if u.NewPassword != "" || u.CurrentPassword != "" {
+		// Ordinary local accounts still require the current password.
+		// The request's JWT user omits the password; load the actor from DB.
+		actor, err := r.Get(ctx, usr.ID)
+		if err != nil {
+			return err
+		}
+		if err := r.decryptPassword(ctx, actor); err != nil {
+			return err
+		}
+		if err := validatePasswordChange(u, actor); err != nil {
+			return err
+		}
 	}
 	if err := validateUsernameUnique(ctx, r, u); err != nil {
 		return err
@@ -316,7 +401,7 @@ func validatePasswordChange(newUser *model.User, logged *model.User) error {
 		err.Errors["password"] = "ra.validation.required"
 	}
 
-	if !strings.HasPrefix(logged.Password, consts.PasswordAutogenPrefix) {
+	if !logged.OIDCLinked && !strings.HasPrefix(logged.Password, consts.PasswordAutogenPrefix) {
 		if newUser.CurrentPassword == "" {
 			err.Errors["currentPassword"] = "ra.validation.required"
 		}

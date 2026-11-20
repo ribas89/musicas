@@ -3,6 +3,8 @@ package server
 import (
 	"context"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/Masterminds/squirrel"
@@ -86,4 +88,22 @@ func checkExternalCredentials() {
 			log.Debug("ListenBrainz integration is ENABLED", "ListenBrainz.BaseURL", conf.Server().ListenBrainz.BaseURL)
 		}
 	}
+}
+
+// bootstrapAdminEnv creates the initial local break-glass administrator once.
+// Environment changes never overwrite existing credentials or create extra admins.
+func bootstrapAdminEnv(ctx context.Context, ds model.DataStore) error {
+	username := strings.TrimSpace(os.Getenv("ADMIN_USER"))
+	password := os.Getenv("ADMIN_PASSWORD")
+	if username == "" || password == "" {
+		return fmt.Errorf("ADMIN_USER and ADMIN_PASSWORD must both be set")
+	}
+	n, err := ds.User().CountAll(ctx)
+	if err != nil {
+		return err
+	}
+	if n != 0 {
+		return nil
+	}
+	return createAdminUser(ctx, ds, username, password)
 }

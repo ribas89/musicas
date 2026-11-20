@@ -5,6 +5,9 @@ import clsx from 'clsx'
 import { useTranslate, MenuItemLink, getResources } from 'react-admin'
 import ViewListIcon from '@material-ui/icons/ViewList'
 import AlbumIcon from '@material-ui/icons/Album'
+import FolderOpenIcon from '@material-ui/icons/FolderOpen'
+import YouTubeIcon from '@material-ui/icons/YouTube'
+import MusicNoteIcon from '@material-ui/icons/MusicNote'
 import SubMenu from './SubMenu'
 import { humanize, pluralize } from 'inflection'
 import albumLists from '../album/albumLists'
@@ -126,6 +129,30 @@ const Menu = ({ dense = false }) => {
         )}
       </SubMenu>
       {resources.filter(subItems(undefined)).map(renderResourceMenuItemLink)}
+      <MenuItemLink
+        to="/files"
+        primaryText="Files"
+        leftIcon={<FolderOpenIcon />}
+        sidebarIsOpen={open}
+        dense={dense}
+        activeClassName={classes.active}
+      />
+      <MenuItemLink
+        to="/youtube"
+        primaryText="YouTube"
+        leftIcon={<YouTubeIcon />}
+        sidebarIsOpen={open}
+        dense={dense}
+        activeClassName={classes.active}
+      />
+      <MenuItemLink
+        to="/lyrics"
+        primaryText="Lyrics"
+        leftIcon={<MusicNoteIcon />}
+        sidebarIsOpen={open}
+        dense={dense}
+        activeClassName={classes.active}
+      />
       {config.devSidebarPlaylists && open ? (
         <>
           <Divider />

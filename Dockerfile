@@ -32,7 +32,8 @@ WORKDIR /app
 # Install node dependencies
 COPY ui/package.json ui/package-lock.json ./
 COPY ui/bin/ ./bin/
-RUN npm ci
+# Ensure script is executable even when archive extraction strips file modes.
+RUN chmod +x bin/update-workbox.sh && npm ci
 
 # Build bundle
 COPY ui/ ./
@@ -69,7 +70,7 @@ RUN --mount=type=bind,source=. \
     set -e
     xx-go --wrap
     export CGO_ENABLED=1
-    BUILD_TAGS=$(./release/build-tags.sh)
+    BUILD_TAGS=$(sh ./release/build-tags.sh)
     # -latomic is required on 32-bit arm (arm/v6, arm/v7) so SQLite's 64-bit atomics resolve.
     go build -tags="${BUILD_TAGS}" -ldflags="-w -s \
         -linkmode=external -extldflags '-latomic' \
@@ -77,7 +78,7 @@ RUN --mount=type=bind,source=. \
         -X github.com/navidrome/navidrome/consts.gitTag=${GIT_TAG}" \
         -o /out/navidrome .
     # Fail the build if native libwebp (purego) leaked into a 32-bit binary (issue #5738).
-    ./release/verify-binary.sh /out/navidrome
+    sh ./release/verify-binary.sh /out/navidrome
     # Fail the build if the binary is accidentally statically linked: dlopen (and
     # therefore native libwebp detection) only works with a dynamic interpreter.
     file /out/navidrome | grep -q "dynamically linked" || { echo "ERROR: /out/navidrome is not dynamically linked"; file /out/navidrome; exit 1; }
@@ -137,13 +138,13 @@ RUN --mount=type=bind,source=. \
         export EXT=".exe"
     fi
 
-    BUILD_TAGS=$(./release/build-tags.sh)
+    BUILD_TAGS=$(sh ./release/build-tags.sh)
     go build -tags="${BUILD_TAGS}" -ldflags="${LD_EXTRA} -w -s \
         -X github.com/navidrome/navidrome/consts.gitSha=${GIT_SHA} \
         -X github.com/navidrome/navidrome/consts.gitTag=${GIT_TAG}" \
         -o /out/navidrome${EXT} .
     # Fail the build if native libwebp (purego) leaked into a 32-bit binary (issue #5738).
-    ./release/verify-binary.sh /out/navidrome*
+    sh ./release/verify-binary.sh /out/navidrome*
 EOT
 
 # Verify if the binary was built for the correct platform and it is statically linked
@@ -203,15 +204,24 @@ RUN mpv --no-video --ao=null --version > /dev/null
 COPY --from=build-alpine /out/navidrome /app/
 
 VOLUME ["/data", "/music"]
-ENV ND_MUSICFOLDER=/music
+ENV ND_MUSICFOLDER=/music/public
 ENV ND_DATAFOLDER=/data
 ENV ND_CONFIGFILE=/data/navidrome.toml
-ENV ND_PORT=4533
+ENV ND_PORT=4553
 RUN touch /.nddockerenv
 
 EXPOSE ${ND_PORT}
 WORKDIR /app
 ENV PATH="/app:${PATH}"
 
-ENTRYPOINT ["/app/navidrome"]
+COPY --chmod=755 deployment/entrypoint.sh /app/entrypoint.sh
+
+# Run without root privileges by default, matching docker-compose user: "1000:1000".
+RUN addgroup -S -g 1000 musica \
+    && adduser -S -D -u 1000 -G musica -h /home/musica musica \
+    && mkdir -p /data /music/public /music/users \
+    && chown -R musica:musica /data /music /app
+USER 1000:1000
+
+ENTRYPOINT ["/app/entrypoint.sh"]
 

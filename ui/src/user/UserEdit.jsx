@@ -47,7 +47,12 @@ const UserToolbar = ({ showDelete, ...props }) => (
 
 const CurrentPasswordInput = ({ formData, isMyself, ...rest }) => {
   const { permissions } = usePermissions()
-  return formData.changePassword && (isMyself || permissions !== 'admin') ? (
+  const record = useRecordContext()
+  // Use the persisted OIDC identity on the server-supplied record as well as
+  // the form data. A disabled form control may be omitted by react-admin.
+  const oidcLinked = Boolean(record?.oidcLinked || formData.oidcLinked) ||
+    (isMyself && localStorage.getItem('oidc-linked') === 'true')
+  return formData.changePassword && !oidcLinked && (isMyself || permissions !== 'admin') ? (
     <PasswordInput className="ra-input" source="currentPassword" {...rest} />
   ) : null
 }
@@ -82,11 +87,16 @@ const UserEdit = (props) => {
   const save = useCallback(
     async (values) => {
       try {
+        const data = { ...values }
+        if (data.oidcLinked ||
+          (isMyself && localStorage.getItem('oidc-linked') === 'true')) {
+          delete data.currentPassword
+        }
         await mutate(
           {
             type: 'update',
             resource: 'user',
-            payload: { id: values.id, data: values },
+            payload: { id: values.id, data },
           },
           { returnPromise: true },
         )
@@ -101,7 +111,7 @@ const UserEdit = (props) => {
         notify('ra.page.error', 'warning')
       }
     },
-    [mutate, notify, permissions, redirect, refresh],
+    [isMyself, mutate, notify, permissions, redirect, refresh],
   )
 
   // Custom validation function
@@ -118,17 +128,35 @@ const UserEdit = (props) => {
         validate={validateForm}
       >
         {permissions === 'admin' && (
-          <TextInput
-            spellCheck={false}
-            source="userName"
-            validate={[required()]}
-          />
+          <FormDataConsumer>
+            {({ formData }) => (
+              <TextInput
+                spellCheck={false}
+                source="userName"
+                disabled={Boolean(formData.oidcLinked) ||
+                  (isMyself && localStorage.getItem('oidc-linked') === 'true')}
+                helperText={formData.oidcLinked || (isMyself && localStorage.getItem('oidc-linked') === 'true')
+                  ? 'Managed by Authentik' : undefined}
+                validate={formData.oidcLinked || (isMyself && localStorage.getItem('oidc-linked') === 'true')
+                  ? [] : [required()]}
+              />
+            )}
+          </FormDataConsumer>
         )}
-        <TextInput
-          source="name"
-          validate={[required()]}
-          {...getNameHelperText()}
-        />
+        <FormDataConsumer>
+          {({ formData }) => (
+            <TextInput
+              source="name"
+              disabled={Boolean(formData.oidcLinked) ||
+                (isMyself && localStorage.getItem('oidc-linked') === 'true')}
+              validate={formData.oidcLinked || (isMyself && localStorage.getItem('oidc-linked') === 'true')
+                ? [] : [required()]}
+              {...(formData.oidcLinked || (isMyself && localStorage.getItem('oidc-linked') === 'true')
+                ? { helperText: 'Managed by Authentik' }
+                : getNameHelperText())}
+            />
+          )}
+        </FormDataConsumer>
         <TextInput spellCheck={false} source="email" validate={[email()]} />
         <BooleanInput source="changePassword" />
         <FormDataConsumer>

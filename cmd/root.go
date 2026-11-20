@@ -13,6 +13,7 @@ import (
 	"github.com/navidrome/navidrome/conf"
 	"github.com/navidrome/navidrome/consts"
 	"github.com/navidrome/navidrome/core/artwork"
+	lyricssvc "github.com/navidrome/navidrome/core/lyrics"
 	"github.com/navidrome/navidrome/db"
 	"github.com/navidrome/navidrome/log"
 	"github.com/navidrome/navidrome/model"
@@ -90,6 +91,7 @@ func runNavidrome(parentCtx context.Context) error {
 	g.Go(startPlaybackServer(ctx))
 	g.Go(startJellyfinDiscovery(ctx))
 	g.Go(schedulePeriodicBackup(ctx))
+	g.Go(scheduleLyricsScan(ctx))
 	g.Go(startInsightsCollector(ctx))
 	g.Go(scheduleDBAnalyzer(ctx))
 	g.Go(startPluginManager(ctx))
@@ -263,6 +265,38 @@ func startScanWatcher(ctx context.Context) func() error {
 		err := w.Run(ctx)
 		if err != nil {
 			log.Error("Error starting watcher", err)
+		}
+		return nil
+	}
+}
+
+func scheduleLyricsScan(ctx context.Context) func() error {
+	return func() error {
+		value := strings.TrimSpace(os.Getenv("LYRICS_INTERVAL"))
+		if value == "" {
+			value = "24h"
+		}
+		interval, err := time.ParseDuration(value)
+		if err != nil || interval < 0 {
+			log.Error(ctx, "Invalid LYRICS_INTERVAL; scheduled lyrics scans are disabled", "value", value, err)
+			return nil
+		}
+		if interval == 0 {
+			log.Info(ctx, "Scheduled lyrics scans are DISABLED")
+			return nil
+		}
+
+		fetcher := lyricssvc.NewFetcher(CreateDataStore())
+		log.Info(ctx, "Scheduling global lyrics scan", "interval", interval)
+		_, err = scheduler.GetInstance().Add(interval.String(), func() {
+			if scanErr := fetcher.ScanAll(ctx); scanErr == lyricssvc.ErrScanBusy {
+				log.Debug(ctx, "Skipping scheduled lyrics scan because another lyrics scan is running")
+			} else if scanErr != nil {
+				log.Error(ctx, "Scheduled lyrics scan failed", scanErr)
+			}
+		})
+		if err != nil {
+			log.Error(ctx, "Error scheduling lyrics scan", err)
 		}
 		return nil
 	}

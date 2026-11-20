@@ -33,16 +33,32 @@ type Server struct {
 	appRoot  string
 	broker   events.Broker
 	insights metrics.Insights
+	oidc     *nativeOIDC
 }
 
 func New(ds model.DataStore, broker events.Broker, insights metrics.Insights) *Server {
 	s := &Server{ds: ds, broker: broker, insights: insights}
+	if err := initializeMusicLayout(); err != nil {
+		log.Fatal("Invalid music library layout", err)
+	}
 	if err := initialSetup(context.TODO(), ds); err != nil {
 		log.Fatal("Error running initial setup", err)
 	}
+	if err := configureSharedLibrary(context.TODO(), ds); err != nil {
+		log.Fatal("Unable to configure public library", err)
+	}
 	auth.Init(s.ds)
+	var oidcErr error
+	s.oidc, oidcErr = newNativeOIDC(s.ds)
+	if oidcErr != nil {
+		log.Fatal("Invalid native Authentik OIDC configuration", oidcErr)
+	}
+	if err := bootstrapAdminEnv(context.TODO(), s.ds); err != nil {
+		log.Fatal("Unable to bootstrap ADMIN_USER", err)
+	}
 	s.initRoutes()
 	s.mountAuthenticationRoutes()
+	s.mountNativeOIDCRoutes()
 	s.mountRootRedirector()
 	checkFFmpegInstallation()
 	checkExternalCredentials()
@@ -220,6 +236,22 @@ func (s *Server) mountAuthenticationRoutes() chi.Router {
 		}
 		r.Post("/createAdmin", createAdmin(s.ds))
 	})
+}
+
+// mountNativeOIDCRoutes makes Navidrome an OIDC relying party, without any
+// trusted proxy identity headers. The callback is registered exactly as the
+// OIDC_REDIRECT_URL configured in Authentik.
+func (s *Server) mountNativeOIDCRoutes() {
+	if s.oidc == nil {
+		return
+	}
+	r := s.router
+	base := path.Join(conf.Server().BasePath, "/auth/oidc")
+	r.Get(base+"/start", s.oidc.start)
+	r.Get(base+"/callback", s.oidc.callback)
+	r.Get(base+"/password", s.oidc.password)
+	r.Post(base+"/password", s.oidc.password)
+	r.Get(base+"/session", s.oidc.session)
 }
 
 // mountRootRedirector redirects the root path to the UI app

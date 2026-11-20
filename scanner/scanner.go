@@ -178,6 +178,11 @@ func (s *scannerImpl) scanFolders(ctx context.Context, fullScan bool, targets []
 		// Update last_scan_completed_at for all libraries
 		s.runUpdateLibraries(ctx, &state),
 	)
+	if err == nil {
+		// Native, user-owned smart playlists are synchronized only after tracks
+		// and folders have been fully scanned. No NSP files or ID3 changes.
+		err = syncOIDCFolderPlaylists(ctx, s.ds, state.libraries, state.failedLibs)
+	}
 	if err != nil {
 		log.Error(ctx, "Scanner: Finished with error", "duration", time.Since(startTime), err)
 		_ = s.ds.Property().Put(ctx, consts.LastScanErrorKey, err.Error())

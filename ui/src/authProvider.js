@@ -13,13 +13,19 @@ if (config.auth) {
   }
 }
 
-function storeAuthenticationInfo(authInfo) {
+export function storeAuthenticationInfo(authInfo) {
   authInfo.token && localStorage.setItem('token', authInfo.token)
   localStorage.setItem('userId', authInfo.id)
   localStorage.setItem('name', authInfo.name)
   localStorage.setItem('username', authInfo.username)
-  authInfo.avatar && localStorage.setItem('avatar', authInfo.avatar)
+  // Clear stale photos when switching users or when Authentik removes a picture.
+  if (authInfo.avatar) {
+    localStorage.setItem('avatar', authInfo.avatar)
+  } else {
+    localStorage.removeItem('avatar')
+  }
   localStorage.setItem('role', authInfo.isAdmin ? 'admin' : 'regular')
+  localStorage.setItem('oidc-linked', authInfo.oidcLinked === true ? 'true' : 'false')
   localStorage.setItem('subsonic-salt', authInfo.subsonicSalt)
   localStorage.setItem('subsonic-token', authInfo.subsonicToken)
   localStorage.setItem('is-authenticated', 'true')
@@ -106,6 +112,7 @@ const removeItems = () => {
   localStorage.removeItem('username')
   localStorage.removeItem('avatar')
   localStorage.removeItem('role')
+  localStorage.removeItem('oidc-linked')
   localStorage.removeItem('subsonic-salt')
   localStorage.removeItem('subsonic-token')
   localStorage.removeItem('is-authenticated')

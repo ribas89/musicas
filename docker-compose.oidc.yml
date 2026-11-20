@@ -1,0 +1,32 @@
+# Portable Docker Compose example for the Musicas source in build/.
+# From build/: docker compose --env-file ../.env -f docker-compose.oidc.yml up -d
+# Set MUSICAS_HOST and TRAEFIK_NETWORK for your environment.
+services:
+  musica:
+    container_name: musica
+    cpus: 2
+    image: ${MUSICAS_IMAGE:-musicas:local}
+    build:
+      context: .
+    user: "1000:1000"
+    env_file:
+      - ${MUSICAS_ROOT:-..}/.env
+    volumes:
+      - ${MUSICAS_ROOT:-..}/data:/data
+      - ${MUSICAS_ROOT:-..}/music:/music
+    restart: unless-stopped
+    networks:
+      - reverse_proxy
+    healthcheck:
+      disable: true
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-traefik}
+      - traefik.http.routers.musica.rule=Host(`${MUSICAS_HOST:-music.example.com}`)
+      - traefik.http.routers.musica.service=musica
+      - traefik.http.services.musica.loadbalancer.server.port=4553
+
+networks:
+  reverse_proxy:
+    external: true
+    name: ${TRAEFIK_NETWORK:-traefik}

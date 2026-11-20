@@ -17,11 +17,11 @@ import (
 
 func fromEmbedded(ctx context.Context, mf *model.MediaFile) (model.LyricList, error) {
 	if mf.Lyrics != "" {
-		log.Trace(ctx, "embedded lyrics found in file", "title", mf.Title)
+		log.Debug(ctx, "Lyrics: embedded lyrics field present", "emptyArray", mf.Lyrics == "[]")
 		return mf.StructuredLyrics()
 	}
 
-	log.Trace(ctx, "no embedded lyrics for file", "path", mf.Title)
+	log.Debug(ctx, "Lyrics: no embedded lyrics")
 
 	return nil, nil
 }
@@ -31,26 +31,32 @@ func fromExternalFile(ctx context.Context, mf *model.MediaFile, suffix string) (
 	sidecarRelPath := mf.Path[0:len(mf.Path)-len(ext)] + suffix
 	ctx = log.NewContext(ctx, "file", sidecarRelPath)
 
+	log.Debug(ctx, "Lyrics: checking sidecar file", "suffix", suffix)
 	store, err := storage.For(mf.LibraryPath)
 	if err != nil {
+		log.Debug(ctx, "Lyrics: storage lookup failed", "error", err)
 		return nil, fmt.Errorf("getting storage for library: %w", err)
 	}
 	fsys, err := store.FS()
 	if err != nil {
+		log.Debug(ctx, "Lyrics: opening library filesystem failed", "error", err)
 		return nil, fmt.Errorf("opening library filesystem: %w", err)
 	}
 
 	f, err := fsys.Open(sidecarRelPath)
 	if errors.Is(err, fs.ErrNotExist) {
-		log.Trace(ctx, "no lyrics found at path")
+		log.Debug(ctx, "Lyrics: sidecar file does not exist")
 		return nil, nil
 	} else if err != nil {
+		log.Debug(ctx, "Lyrics: sidecar file could not be opened", "error", err)
 		return nil, err
 	}
 	defer f.Close()
+	log.Debug(ctx, "Lyrics: sidecar file found")
 
 	contents, err := io.ReadAll(ioutils.UTF8Reader(f))
 	if err != nil {
+		log.Debug(ctx, "Lyrics: sidecar read failed", "error", err)
 		return nil, err
 	}
 
@@ -61,11 +67,11 @@ func fromExternalFile(ctx context.Context, mf *model.MediaFile, suffix string) (
 	}
 
 	if len(list) == 0 {
-		log.Trace(ctx, "empty lyrics from external file")
+		log.Debug(ctx, "Lyrics: sidecar parsed but contained no lyrics", "bytes", len(contents))
 		return nil, nil
 	}
 
-	log.Trace(ctx, "retrieved lyrics from external file")
+	log.Debug(ctx, "Lyrics: sidecar parsed", "bytes", len(contents), "entries", len(list), "lines", len(list[0].Line), "synced", list[0].Synced)
 	return list, nil
 }
 
@@ -84,6 +90,7 @@ func (l *lyricsService) fromPlugin(ctx context.Context, mf *model.MediaFile, plu
 	}
 
 	key := pluginKey{plugin: pluginName, mediaFileID: mf.ID}
+	log.Debug(ctx, "Lyrics: checking plugin source", "plugin", pluginName)
 	return l.pluginCache.GetWithLoader(key, func(pluginKey) (model.LyricList, time.Duration, error) {
 		// Concurrent callers share one load, so one cancelled request must not abort it for the others.
 		loadCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lyricsLoadTimeout)

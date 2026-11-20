@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { render, screen } from '@testing-library/react'
 import UserEdit from './UserEdit'
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 const defaultUser = {
   id: 'user1',
@@ -33,6 +33,8 @@ const hooks = vi.hoisted(() => ({
   notify: vi.fn(),
   redirect: vi.fn(),
   refresh: vi.fn(),
+  formData: {},
+  record: null,
 }))
 
 // Mock React-Admin completely with simpler implementations
@@ -47,7 +49,7 @@ vi.mock('react-admin', () => ({
     hooks.save = save
     return <form data-testid="simple-form">{children}</form>
   },
-  TextInput: ({ source }) => <input data-testid={`text-input-${source}`} />,
+  TextInput: ({ source, disabled }) => <input data-testid={`text-input-${source}`} disabled={disabled} />,
   BooleanInput: ({ source }) => (
     <input type="checkbox" data-testid={`boolean-input-${source}`} />
   ),
@@ -56,7 +58,7 @@ vi.mock('react-admin', () => ({
   ),
   Toolbar: ({ children }) => <div data-testid="toolbar">{children}</div>,
   SaveButton: () => <button data-testid="save-button">Save</button>,
-  FormDataConsumer: ({ children }) => children({ formData: {} }),
+  FormDataConsumer: ({ children }) => children({ formData: hooks.formData }),
   Typography: ({ children }) => <p>{children}</p>,
   required: () => () => null,
   email: () => () => null,
@@ -66,6 +68,7 @@ vi.mock('react-admin', () => ({
   useRefresh: () => hooks.refresh,
   usePermissions: () => ({ permissions: 'admin' }),
   useTranslate: () => (key) => key,
+  useRecordContext: () => hooks.record,
 }))
 
 vi.mock('./LibrarySelectionField.jsx', () => ({
@@ -94,6 +97,7 @@ vi.mock('@material-ui/core', () => ({
 }))
 
 describe('<UserEdit />', () => {
+  beforeEach(() => { hooks.formData = {}; hooks.record = null })
   it('should render the user edit form', () => {
     render(<UserEdit id="user1" permissions="admin" />)
 
@@ -141,6 +145,41 @@ describe('<UserEdit />', () => {
     // But should still render name and email
     expect(screen.getByTestId('text-input-name')).toBeInTheDocument()
     expect(screen.getByTestId('text-input-email')).toBeInTheDocument()
+  })
+
+  it('locks OIDC usernames and names while allowing password changes without the old password', () => {
+    hooks.formData = { oidcLinked: true, changePassword: true }
+    render(<UserEdit id="user1" permissions="admin" />)
+
+    expect(screen.getByTestId('text-input-userName')).toBeDisabled()
+    expect(screen.getByTestId('text-input-name')).toBeDisabled()
+    expect(screen.queryByTestId('password-input-currentPassword')).not.toBeInTheDocument()
+    expect(screen.getByTestId('password-input-password')).toBeInTheDocument()
+  })
+
+  it('hides current password for a signed-in OIDC user even if formData omits its flag', () => {
+    localStorage.setItem('userId', 'user1')
+    localStorage.setItem('oidc-linked', 'true')
+    hooks.formData = { changePassword: true }
+    render(<UserEdit id="user1" permissions="user" />)
+    expect(screen.queryByTestId('password-input-currentPassword')).not.toBeInTheDocument()
+    expect(screen.getByTestId('text-input-name')).toBeDisabled()
+    localStorage.removeItem('oidc-linked')
+    localStorage.removeItem('userId')
+  })
+
+  it('hides current password when the server record indicates OIDC even if form data loses the flag', () => {
+    hooks.record = { ...defaultUser, oidcLinked: true }
+    hooks.formData = { changePassword: true }
+    render(<UserEdit id="user1" permissions="user" />)
+    expect(screen.queryByTestId('password-input-currentPassword')).not.toBeInTheDocument()
+  })
+
+  it('still asks for the current password for ordinary accounts', () => {
+    hooks.formData = { oidcLinked: false, changePassword: true }
+    render(<UserEdit id="user1" permissions="user" />)
+    expect(screen.getByTestId('text-input-name')).not.toBeDisabled()
+    expect(screen.getByTestId('password-input-currentPassword')).toBeInTheDocument()
   })
 
   describe('save', () => {

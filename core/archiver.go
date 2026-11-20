@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/navidrome/navidrome/core/artwork"
@@ -33,6 +34,7 @@ type Archiver interface {
 	ZipArtist(ctx context.Context, id string, format string, bitrate int, w io.Writer) error
 	ZipShare(ctx context.Context, s *model.Share, w io.Writer) error
 	ZipPlaylist(ctx context.Context, id string, format string, bitrate int, w io.Writer) error
+	ZipFolder(ctx context.Context, libraryID int, folder string, format string, bitrate int, w io.Writer) error
 }
 
 func NewArchiver(ms stream.MediaStreamer, decider stream.TranscodeDecider, ds model.DataStore, shares Share, artwork artwork.Artwork) Archiver {
@@ -188,6 +190,54 @@ func (a *archiver) ZipShare(ctx context.Context, s *model.Share, out io.Writer) 
 	// hide a private playlist. Only the cover read is elevated.
 	coverCtx := request.WithUser(ctx, model.User{IsAdmin: true})
 	return a.zipMediaFiles(ctx, s.ID, s.ID, s.Format, s.MaxBitRate, out, s.Tracks, coverCtx, s.CoverArtID(), false)
+}
+
+// ZipFolder downloads scanned tracks from exactly one private library folder.
+// It retains the relative subfolder structure and reuses the same FFmpeg-based
+// transcoding engine as playlist/album downloads. No .nsp or .m3u is generated.
+func (a *archiver) ZipFolder(ctx context.Context, libraryID int, folder, format string, bitrate int, out io.Writer) error {
+	prefix := strings.Trim(folder, "/") + "/"
+	if prefix == "/" || strings.Contains(prefix, "../") {
+		return errors.New("invalid download folder")
+	}
+	mfs, err := a.ds.MediaFile().GetAll(ctx, model.QueryOptions{
+		Filters: squirrel.And{
+			squirrel.Eq{"media_file.library_id": libraryID, "media_file.missing": false},
+			// SQL LIKE treats % and _ in folder names as wildcards.
+			// Compare literal path bytes instead for strict isolation.
+			squirrel.Expr("substr(media_file.path,1,?) = ?", utf8.RuneCountInString(prefix), prefix),
+		},
+		Max: 20001,
+	})
+	if err != nil {
+		return err
+	}
+	if len(mfs) == 0 {
+		return model.ErrNotFound
+	}
+	if len(mfs) > 20000 {
+		return errors.New("folder exceeds 20000 scanned tracks")
+	}
+	z := createZipWriter(out, format, bitrate)
+	for _, mf := range mfs {
+		if mf.LibraryID != libraryID || !strings.HasPrefix(mf.Path, prefix) {
+			continue
+		}
+		name := strings.TrimPrefix(mf.Path, prefix)
+		if name == "" || path.Clean(name) != name || strings.HasPrefix(name, "../") || strings.HasPrefix(name, "/") {
+			continue
+		}
+		req := a.resolveRequest(ctx, &mf, format, bitrate)
+		if req.Format != "raw" {
+			name = strings.TrimSuffix(name, "."+mf.Suffix) + "." + req.Format
+		}
+		// Reuse the same transcoding and streaming code as a playlist ZIP.
+		if err := a.addFileToZip(ctx, z, mf, req, name); err != nil {
+			_ = z.Close()
+			return err
+		}
+	}
+	return z.Close()
 }
 
 func (a *archiver) ZipPlaylist(ctx context.Context, id string, format string, bitrate int, out io.Writer) error {

@@ -127,14 +127,19 @@ func (api *Router) GetLyricsBySongId(r *http.Request) (*responses.Subsonic, erro
 	if err != nil {
 		return nil, err
 	}
+	ctx := log.NewContext(r.Context(), "lyricsSongId", id)
+	log.Debug(ctx, "Lyrics API: getLyricsBySongId requested")
 
-	mediaFile, err := api.ds.MediaFile().Get(r.Context(), id)
+	mediaFile, err := api.ds.MediaFile().Get(ctx, id)
 	if err != nil {
+		log.Debug(ctx, "Lyrics API: song lookup failed", "error", err)
 		return nil, err
 	}
+	log.Debug(ctx, "Lyrics API: song resolved", "path", mediaFile.Path, "libraryPath", mediaFile.LibraryPath)
 
-	structuredLyrics, err := api.lyrics.GetLyrics(r.Context(), mediaFile)
+	structuredLyrics, err := api.lyrics.GetLyrics(ctx, mediaFile)
 	if err != nil {
+		log.Debug(ctx, "Lyrics API: native resolver failed", "error", err)
 		return nil, err
 	}
 
@@ -142,6 +147,7 @@ func (api *Router) GetLyricsBySongId(r *http.Request) (*responses.Subsonic, erro
 
 	response := newResponse()
 	response.LyricsList = buildLyricsList(mediaFile, structuredLyrics, enhanced)
+	log.Debug(ctx, "Lyrics API: response built", "resolverEntries", len(structuredLyrics), "responseEntries", len(response.LyricsList.StructuredLyrics), "enhanced", enhanced)
 
 	return response, nil
 }

@@ -352,6 +352,10 @@ func (n noopArchiver) ZipShare(context.Context, *model.Share, io.Writer) error {
 	return model.ErrNotFound
 }
 
+func (n noopArchiver) ZipFolder(context.Context, int, string, string, int, io.Writer) error {
+	return nil
+}
+
 func (n noopArchiver) ZipPlaylist(context.Context, string, string, int, io.Writer) error {
 	return model.ErrNotFound
 }

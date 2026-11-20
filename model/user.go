@@ -22,6 +22,11 @@ type User struct {
 
 	// Library associations (many-to-many relationship)
 	Libraries Libraries `structs:"-" json:"libraries,omitempty"`
+	// Whether this account is managed by OIDC. Derived from oidc_identity on reads,
+	// never accepted as authority from request JSON.
+	OIDCLinked bool `structs:"-" json:"oidcLinked"`
+	// Avatar is read from the linked OIDC identity. Not user-editable and not a user table column.
+	Avatar string `structs:"-" json:"avatar,omitempty"`
 
 	// This is only available on the backend, and it is never sent over the wire
 	Password string `structs:"-" json:"-"`
